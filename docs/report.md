@@ -94,16 +94,23 @@ sequences of log keys (template IDs) from **normal training windows only**.
 Because only the rank of each true key is stored, the whole (g, r) grid is evaluated from a single
 forward pass. Unseen (`<unk>`) keys can never be predicted and therefore always count as misses.
 
-**Where this reproduction deliberately differs from the reference code.** These are our reading of
-the LogBERT repository (`HelenGuohx/logbert`); please re-check the file references before submitting.
+**How this reproduction relates to the reference code.** We checked every point below against the
+source of the LogBERT repository (`HelenGuohx/logbert`, branch `main`, read on 2026-11-03).
 
-| Aspect | LogBERT repository | This project | Why |
+We match its BGL options for the window (5 minutes, step 1), mask ratio (0.5), `min_len` (10),
+sequence length (512), hidden size (256), attention heads (4), learning rate (1e-3), dev fraction (0.1)
+and the hypersphere loss (`nn.MSELoss`, added as `loss + 0.1 * hyper_loss`). The differences:
+
+| Aspect | LogBERT repository (file) | This project | Why |
 |---|---|---|---|
-| Train/test selection | normal sessions shuffled before splitting (`BGL/data_process.py`) | chronological 60/20/20 | Le & Zhang (2022); deployment realism |
-| Threshold selection | best threshold searched on the **test** results (`predict_log.py`) | g and r tuned on validation, applied once to test | avoids test-set tuning |
-| Short test windows | sequences shorter than `min_len` are skipped at test time (`dataset/sample.py`) | every window is evaluated | both approaches must score the same windows |
-| Long windows | truncated to `seq_len` | split into chunks | messages after position 512 would otherwise go unchecked |
-| Decision rule | undetected keys > ratio × masked keys | undetected keys > r (paper's formulation) | follows the paper and the proposal |
+| Train/test selection | normal windows shuffled (`sample(frac=1, random_state=12)`); 40% train, the other 60% plus every abnormal window test (`BGL/data_process.py`) | chronological 60/20/20 | Le & Zhang (2022); deployment realism |
+| Threshold selection | `find_best_threshold(test_normal_results, test_abnormal_results, …)` searches the **test** results (`bert_pytorch/predict_log.py`) | g and r tuned on validation, applied once to test | avoids test-set tuning |
+| Short test windows | `fixed_window` returns nothing below `min_len`, and `generate_test` skips it (`dataset/sample.py`, `predict_log.py`) | every window is evaluated | both approaches must score the same windows |
+| Long windows | truncated with `line[:seq_len]` (`dataset/sample.py`) | split into chunks | messages after position 512 would otherwise go unchecked |
+| Decision rule | `undetected_tokens > masked_tokens * seq_threshold` (`predict_log.py`) | undetected keys > r | the paper's formulation, as in the proposal |
+| Encoder depth | `layers = 4` (`BGL/logbert.py`) | 2 layers | the paper's description, as in the proposal |
+| Training budget | batch 32, up to 200 epochs, early-stopping patience 10 (`BGL/logbert.py`) | batch 64, up to 50 epochs, patience 5 | compute: the full run trains on a CPU |
+| Hypersphere centre | mean over the train and validation loaders each epoch (`bert_pytorch/train_log.py`) | mean over (a sample of) training sequences each epoch | keeps the validation period untouched |
 
 **Extension (full-coverage masking).** LogBERT masks a random 50% of the keys once, so a single
 anomalous message is inspected with probability of only about 0.5. Our `full_coverage` mode splits the

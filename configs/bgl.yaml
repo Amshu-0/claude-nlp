@@ -37,8 +37,10 @@ windows:
   size_seconds: 300
   step_seconds: 60
 
-# Approach A: LogBERT. Two-layer encoder as in the paper; other settings
-# follow the LogBERT repository's BGL options where it specifies them.
+# Approach A: LogBERT. Two layers as in the paper (the repository's BGL options
+# use 4). Mask ratio, min/max length, hidden size, heads, learning rate, dev
+# fraction and the 0.1 VHM weight follow the repository's BGL options; batch
+# 64, 50 epochs and patience 5 (repository: 32, 200, 10) keep training affordable.
 logbert:
   hidden: 256
   layers: 2
