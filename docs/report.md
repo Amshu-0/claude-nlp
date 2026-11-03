@@ -101,11 +101,16 @@ LogRules works in three stages: induction, alignment and deduction. We implement
 **deduction** and leave out the CPO alignment (fine-tuning) stage.
 
 **Induction.** The training pool contains every template seen in the training period, labeled by the
-majority label of its training messages. The generator LLM (**TBD:** GPT-4o-mini, or
-Qwen2.5-7B-Instruct if no API key was available) sees batches of 20 labeled templates, balanced between
-normal and abnormal, over 3 shuffled rounds. For each batch it proposes up to 8 rules as JSON: a
-sentence, keyword phrases copied from the logs, and a label (`prompts/rule_induction.txt`). Duplicate
-proposals are merged.
+majority label of its training messages. The generator LLM sees batches of 20 labeled templates,
+balanced between normal and abnormal, over 3 shuffled rounds. For each batch it proposes up to 8 rules
+as JSON: a sentence, keyword phrases copied from the logs, and a label (`prompts/rule_induction.txt`).
+Duplicate proposals are merged.
+
+The generator is **Qwen2.5-7B-Instruct**, the same open model as the classifier. LogRules used
+GPT-4o-mini, which was not available to us (no API key), and the proposal allows a comparable model in
+that case. This is a limitation worth discussing: the classifier applies rules written by a model of
+its own size, so a stronger generator might induce better rules. Verification on the training set
+guards against the worst of them either way.
 
 **Verification and ranking.** Every candidate rule is applied to the *whole* training pool by keyword
 matching. A rule is kept only if it is never wrong on the templates it matches (precision 1.0) and
