@@ -1,10 +1,11 @@
 # Comparing BERT-Based and Rule-Guided Language Models for System Log Anomaly Detection
 
-**Technical report (draft)** · CSCI 390 Natural Language Processing and Applications · Dr. Qi Li
+**Technical report** · CSCI 390 Natural Language Processing and Applications · Dr. Qi Li
 
-> **Status of this draft.** Approach A results come from the full-BGL run on a 4-core CPU
-> (`configs/bgl_cpu.yaml`). Approach B is running; its rows are marked **TBD** until then, to be
-> copied from `results/comparison.md` and `results/analysis/analysis.md`.
+> **The reported run.** Every number in this report comes from one run on the full BGL log on a
+> 4-core CPU without a GPU (`configs/bgl_cpu.yaml`). LogBERT was trained on the CPU, and Approach B
+> used Qwen2.5-7B-Instruct (4-bit) through a local llama.cpp server. The tables are copied from
+> `results/comparison.md` and `results/analysis/analysis.md`.
 
 ## 1. Problem formulation
 
@@ -129,26 +130,29 @@ LogRules works in three stages: induction, alignment and deduction. We implement
 **deduction** and leave out the CPO alignment (fine-tuning) stage.
 
 **Induction.** The training pool contains every template seen in the training period, labeled by the
-majority label of its training messages. The generator LLM sees batches of 20 labeled templates,
-balanced between normal and abnormal, over 3 shuffled rounds. For each batch it proposes up to 8 rules
-as JSON: a sentence, keyword phrases copied from the logs, and a label (`prompts/rule_induction.txt`).
-Duplicate proposals are merged.
+majority label of its training messages: 442 templates, 31 of them abnormal. The generator LLM sees
+batches of 20 labeled templates, half normal and half abnormal (the rare abnormal ones are cycled).
+For each batch it proposes up to 8 rules as JSON: a sentence, keyword phrases copied from the logs,
+and a label (`prompts/rule_induction.txt`). Duplicate proposals are merged. The default configuration
+makes 3 shuffled passes over the pool; to save CPU time, the reported run made one pass (42 batches).
 
 The generator is **Qwen2.5-7B-Instruct**, the same open model as the classifier. LogRules used
 GPT-4o-mini, which was not available to us (no API key), and the proposal allows a comparable model in
 that case. This is a limitation worth discussing: the classifier applies rules written by a model of
 its own size, so a stronger generator might induce better rules. Verification on the training set
-guards against the worst of them either way.
+guards against the worst of them, though only for their keywords (Section 4).
 
 **Verification and ranking.** Every candidate rule is applied to the *whole* training pool by keyword
 matching. A rule is kept only if it is never wrong on the templates it matches (precision 1.0) and
 matches at least one. Kept rules are ranked by usage: the training templates (then messages) they
-cover correctly. The top 30 are used (`outputs/bgl/rules/rules.md`): **TBD** candidates gave **TBD**
-kept rules.
+cover correctly. The top 30 are used. In the reported run, the 42 batches gave 160 distinct candidate
+rules, of which 99 survived verification (80 abnormal, 19 normal). The top 30 hold 22 abnormal and 8
+normal rules (`results/rules/rules.md`).
 
 **Deduction: four conditions.** The classifier is **Qwen2.5-7B-Instruct** (greedy decoding). Each
-*unique template* in the validation and test periods is classified once, and its label is copied to
-every message with that template. A window is flagged if any of its messages is.
+*unique template* is classified once, and its label is copied to every message with that template. A
+window is flagged if any of its messages is. To save CPU time, the reported run classified only the 472
+test templates with the LLM; the keyword baseline, which costs nothing, was also scored on validation.
 
 1. **Zero-shot:** the template alone (`prompts/zero_shot.txt`).
 2. **Few-shot (case-based):** plus 8 fixed, label-balanced training templates (`prompts/few_shot.txt`).
@@ -158,9 +162,10 @@ every message with that template. A window is flagged if any of its messages is.
    first rule that fires decides; otherwise the template is normal. This tests whether the LLM adds
    anything beyond the rules.
 
-Answers are parsed as JSON, with a word-level fallback. Unusable answers default to *normal* and are
-counted (**TBD** per condition). Every prompt and raw answer is stored in a JSONL cache
-(`outputs/llm_cache/`), which makes reruns free and the experiment auditable.
+Answers are parsed as JSON, with a word-level fallback. Unusable answers would default to *normal* and
+be counted; in the reported run all 1,416 classification answers were usable. Every prompt and raw
+answer is stored in a JSONL cache, which makes reruns free and the experiment auditable. The cache of
+the reported run is committed (`results/llm_cache/`) and replays all of Approach B without a model.
 
 ## 4. Evaluation
 
@@ -171,19 +176,22 @@ test templates, using the original latency for cached answers. `scripts/compare.
 metrics from the saved predictions and refuses methods that did not score exactly the shared windows.
 
 **Main results (test period, window level).** The test set has 5,742 windows, of which 495 (8.6%) are
-anomalous. Inference times were measured on 4 CPU cores.
+anomalous. Inference times were measured on 4 CPU cores. For B1-B3 they are the summed latencies of
+the 472 test templates (6.0, 6.8 and 7.2 s per template).
 
 | Method | Precision | Recall | F1 | FP | Msg-level F1 | Inference time |
 |---|---:|---:|---:|---:|---:|---:|
 | A: LogBERT (g = 12, r = 3) | 0.174 | 0.921 | 0.293 | 2,159 | - | 78 s |
 | A+: LogBERT, full-coverage masking (g = 8, r = 8) | 0.184 | 0.897 | 0.305 | 1,975 | - | 156 s |
-| B1: LLM zero-shot | TBD | TBD | TBD | TBD | TBD | TBD |
-| B2: LLM few-shot | TBD | TBD | TBD | TBD | TBD | TBD |
-| B3: LLM rule-based | TBD | TBD | TBD | TBD | TBD | TBD |
-| B4: Keyword rules (no LLM) | TBD | TBD | TBD | TBD | TBD | TBD |
+| B1: LLM zero-shot | 0.108 | 1.000 | 0.194 | 4,103 | 0.180 | 47 min |
+| B2: LLM few-shot | 0.323 | 0.941 | 0.481 | 976 | 0.444 | 53 min |
+| B3: LLM rule-based | 0.489 | 0.943 | 0.644 | 488 | 0.491 | 57 min |
+| B4: Keyword rules (no LLM) | 1.000 | 0.915 | **0.956** | 0 | 0.984 | 8 ms |
 | Template-level oracle (upper bound for B) | 1.000 | 0.992 | 0.996 | 0 | 0.999 | - |
 
 **Analysis** (`results/analysis/analysis.md`).
+
+*Approach A.*
 
 - **LogBERT's false positives come from the drift.** 99.8% of its 2,159 false-positive windows contain
   a template never seen in training. It flags only 0.3% of normal test windows without such a template,
@@ -200,17 +208,106 @@ anomalous. Inference times were measured on 4 CPU cores.
 - **What LogBERT misses.** Window recall is 0.95 to 0.99 for the large alert categories (`APPSEV`,
   `KERNRTSP`, `KERNMC`, `MASABNORM`), but 0.39 for `KERNSOCK` (`<*> <*> <*> socket closed`, 14 missed
   windows) and 0.14 for `LINKIAP` (`MidplaneSwitchController::receiveTrain() iap failed …`).
-- **Template purity barely limits Approach B.** Only 3 of 472 test templates are mixed, holding 258
-  messages and 31 of the 28,915 test alerts, so a template-level oracle reaches F1 0.996.
-- **What the rules add** (TBD). Compare B3 with B4: if they are close, the rules, not the LLM, do the
-  work; if B3 is clearly better, the LLM generalises the rules to templates no keyword matches.
-- **Agreement between the approaches** (TBD). Which anomalous windows only A, only B, both or neither
-  catch, to tell whether the approaches are complementary.
-- **Cost.** LogBERT scores the 5,742 test windows in 78 s (156 s with full coverage). The LLM's cost grows
-  with the number of unique templates (472 in the test period), not messages, but every template that
-  appears after deployment needs another LLM call.
 
-## 5. Reflection: errors and difficulties
+*Approach B.*
+
+- **On its own, the LLM flags anything that sounds like an error.** Zero-shot, Qwen labels 388 of the
+  472 test templates abnormal. It catches every anomalous window but also flags 78% of the normal ones
+  (precision 0.108). Its false alarms read like errors but were never alerts on BGL: `<*> total
+  interrupts. …` (135,092 messages), `instruction cache parity error corrected` (33,547) and `ciod:
+  Received signal …` (27,510).
+- **Guidance helps, and rules help more than examples.** Eight labeled training examples cut the
+  abnormal templates to 122 (F1 0.481). The 30 ranked rules cut them to 37 (F1 0.644, 488
+  false-positive windows). This is the comparison LogRules makes in favour of rules over case-based
+  prompting.
+- **The rules, not the LLM, do the work.** Applied as plain keyword matching, the same 30 rules (B4)
+  reach F1 0.956 with no false positive at all (message-level F1 0.984), in 8 ms instead of 57
+  minutes. On the test templates the LLM never labels normal what the keyword rules label abnormal; it
+  only adds 28 abnormal labels of its own. Five of them are real alert templates that no keyword
+  matches (`MidplaneSwitchController::receiveTrain() iap failed …`, `Power Good signal deactivated …`,
+  `L<*> major internal error`, `… bll_clear_port failed …` and `rts assertion failed …`). They are
+  worth 14 more anomalous windows (recall 0.915 → 0.943). The other 23 are false alarms covering 57,309
+  normal messages.
+- **The LLM follows the rules' sentences, not their keywords.** B3 cites a rule in 420 of its 472
+  answers, but the cited rule's keywords occur in the template in only 20 of them, and only 12
+  citations name the rule the keyword decision list would apply. All 23 false-positive templates cite
+  an abnormal rule none of whose keywords occurs in the template; 12 of them cite rule 4. Rule 4 reads
+  "Messages mentioning 'FAILED', 'terminated for reason', 'kernel panic', and 'machine check
+  interrupt' are indicative of system failures", but its verified keywords are `lustre mount failed`,
+  `rts: kernel terminated for reason`, `kernel panic` and `machine check interrupt`. The model applies
+  the sentence to `ciod: Error loading … Permission denied` (13,952 messages) and to `ciod: LOGIN <*>
+  failed: No such file or directory` (3,623). Verification guarantees the keywords, not the sentence
+  the LLM reads. Rule 1, "Describes normal system operations or status updates.", serves as the
+  catch-all for 349 normal answers.
+- **The top-30 cut-off costs the keyword rules recall.** Ranking by usage fills the top 30 with
+  near-duplicates: 12 of the 30 rules are variants of "terminated", "panic" or "exited abnormally"
+  (ranks 8-10, 13-15, 20-22 and 27-29). This pushes the `socket closed` rule to rank 32 and the rules
+  for `receiveTrain() iap failed` to ranks 63 and 64; these two templates occur in most of B4's 42
+  missed windows. The keyword baseline's F1 for different numbers of rules:
+
+  | Rules used (top k) | 10 | 20 | 30 (reported) | 35 | 45 | 60 | 99 (all) |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | Validation F1 | 0.820 | 0.831 | 0.837 | 0.885 | 0.888 | 0.870 | 0.870 |
+  | Test F1 | 0.942 | 0.942 | 0.956 | 0.980 | 0.980 | 0.980 | 0.988 |
+
+  Test precision stays 1.000 for every k; validation precision falls to 0.942 (22 false-positive
+  windows) from k = 60. Choosing k on validation (best F1 at k = 45) would have given test F1 0.980.
+  We report k = 30, the value fixed in the proposal. Selecting rules for the templates they add rather
+  than for raw usage would avoid the problem.
+- **Template purity barely limits Approach B, but some labels change over time.** Only 3 of 472 test
+  templates are mixed, holding 258 messages and 31 of the 28,915 test alerts, so a template-level
+  oracle reaches F1 0.996. Between periods, however, two templates change label. `ciod: LOGIN <*>
+  failed: <*> <*>` merges `chdir(…) failed: Permission denied` (472 normal messages in training) with
+  `chdir(…) failed: Input/output error` (816 `APPOUT` alerts in test): Drain masked exactly the two
+  words that carry the label. B2-B4 label it normal, which accounts for 816 of the 913 alert messages
+  B4 misses. It causes only 2 missed windows, because most windows with these messages also contain
+  alerts that are caught. `data <*> <*>` goes the other way: 75% alerts in training, 1 of 79 messages
+  in test.
+
+*The two approaches together.*
+
+- **They miss different windows.** LogBERT catches 18 anomalous windows the keyword rules miss (half of
+  them contain `socket closed`, which no top-30 rule covers). The rules catch 15 that LogBERT misses (8
+  contain `ciod: Error reading message prefix on CioStream socket …`). Both miss 24, mostly windows
+  with `socket closed` (14) and `iap failed` (6). Against the rule-based LLM the split is 10 only
+  LogBERT, 21 only B3 and 18 neither.
+- **But they do not combine well.** Flagging a window when either LogBERT or the keyword rules flag it
+  raises recall to 0.952 but keeps all 2,159 of LogBERT's false positives (F1 0.301). Flagging it only
+  when both do gives F1 0.939, below the rules alone. The rule-based LLM is the exception: requiring
+  LogBERT to agree removes 280 of its 488 false-positive windows (F1 0.644 → 0.776), because the two
+  raise false alarms for different reasons (new templates, misapplied rules).
+- **New templates hurt LogBERT, not the rules.** 361 of the 472 test templates never occur in
+  training, yet only 20 test templates contain an alert. LogBERT counts every unseen key as a miss, so
+  new benign templates become false alarms. The keyword decision list labels a template normal unless
+  a rule fires, which is the right default for almost all of them.
+- **Cost.** LogBERT trains in 60 minutes and scores the 5,742 test windows in 78 s (156 s with full
+  coverage). Rule induction took 50 minutes (42 LLM calls), after which the keyword rules classify every
+  test template in 8 ms. The LLM conditions took 47-57 minutes for 472 templates. Their cost grows with
+  the number of unique templates, not messages, but every template that appears after deployment needs
+  another LLM call.
+
+## 5. Conclusion
+
+Under one shared, chronological setup on BGL, the rule-guided approach clearly beats the LogBERT
+reproduction: F1 0.644 for the rule-based LLM and 0.956 for the same rules as keyword matching, against
+0.293 for LogBERT. The main reason is that the log changes over time. LogBERT sees only template IDs, so
+it flags windows simply because their templates are new; Approach B reads the text of each template
+and can tell a new benign message from an alert.
+
+The LLM itself is not what makes Approach B work, though. Zero-shot it flags most templates. The
+induced rules improve it a lot, but it applies them loosely, and it is beaten by matching their
+verified keywords literally, which takes milliseconds instead of an hour. On BGL, where alert messages
+are few and distinctively worded, the value of LogRules-style induction lies in the verified rules
+more than in the model that applies them. The two approaches miss different alerts, but LogBERT's false
+alarms make it a poor partner for the keyword rules.
+
+These findings come from one dataset, one chronological split and one run of each method under a CPU
+budget: LogBERT trained for at most 6 epochs, induction made a single pass, and one 4-bit 7B model both
+wrote and applied the rules. A stronger rule generator, rules whose sentences are verified as well as
+their keywords, a rule selection that rewards coverage, or a dataset whose anomalies are less lexical
+could change the balance.
+
+## 6. Reflection: errors and difficulties
 
 - **Matching LogBERT's windowing exactly.** The original `sliding_window` loop has edge cases: it stops
   after the first window that reaches the last message, and it drops empty and duplicate windows. We
@@ -227,20 +324,42 @@ anomalous. Inference times were measured on 4 CPU cores.
 - **Engineering bugs caught by tests.** NumPy floats in the training history made checkpoints
   unloadable with the safe `torch.load(weights_only=True)`. A categorical pandas column broke
   `fillna(0)` under pandas 3. Integer table columns rejected string labels in the demo.
-- **Infrastructure.** The development environment could not reach Hugging Face, Zenodo or the OpenAI API.
-  We therefore designed for offline testing: stub LLMs in unit tests, the 2,000-line sample for smoke
-  runs, and a response cache so the expensive LLM steps run once on Colab.
+- **Infrastructure.** At first the development environment could reach neither Zenodo, Hugging Face nor
+  the OpenAI API. We therefore designed for offline testing: stub LLMs in unit tests, the 2,000-line
+  sample for smoke runs, and a response cache. We verified a mirror of the dataset (Section 2), and once
+  Hugging Face became reachable we ran everything in the same environment on CPU. The Colab notebook
+  remains the route to a GPU.
 - **Small samples mislead.** On the 2,000-line sample, which is spread over seven months, most windows
   hold one to three messages and LogBERT flags almost everything (test precision 0.13 at recall 1.0).
   The sample is only a pipeline check, not evidence about either method.
-- **TBD:** difficulties from the full run (training time, LLM output format errors, rule quality, etc.).
+- **Running a 7B model without a GPU or an API key.** We served the official 4-bit GGUF build of
+  Qwen2.5-7B-Instruct with llama.cpp (through llama-cpp-python) on the same 4 CPU cores. At 6-7 s per
+  template, the three LLM conditions took 2.6 hours, and induction (42 calls of up to 1,024 output
+  tokens) took 50 minutes. Three choices kept this affordable: classifying each unique template once
+  (472 calls instead of 482,331), putting the log line last in every prompt so the server can reuse the
+  cached prompt prefix (about 20% faster per call), and running the LLM only after LogBERT's training.
+  While both shared the CPU, a single call took 80-105 s.
+- **Long jobs on a short-lived machine.** The cloud container was restarted twice while the session was
+  idle; the first restart killed the model server in the middle of the zero-shot condition. The
+  response cache made this harmless: the rerun took the 689 answers already stored from the cache and
+  computed only the rest.
+- **Answer format was no problem; rule quality was.** All 1,416 classification answers were usable. The
+  induced rules were the weak point. The same 7B model wrote vague sentences ("Describes normal system
+  operations or status updates."), many near-duplicates, and keywords such as `pro` or
+  `<*>:<*>eeeeeee` that pass verification only because no training template contradicts them.
+  Verification removed 61 of 160 candidates, but it checks keywords, not the sentences the LLM reads
+  (Section 4).
 
-## 6. Reproducibility
+## 7. Reproducibility
 
-All settings live in `configs/bgl.yaml`; every run saves its resolved configuration, and seeds are fixed.
-`make all` (or the Colab notebook) reproduces every number above, and `make smoke` checks the pipeline in
-about a minute on a CPU. The trained LogBERT checkpoint, the induced rules, all prompts and the LLM
-response cache are kept with the results.
+All settings live in `configs/bgl.yaml`. The reported run used `configs/bgl_cpu.yaml`, which extends it
+for a CPU: de-duplicated training sequences, at most 6 LogBERT epochs, one induction pass, test
+templates only, and a local llama.cpp server. Every run saves its resolved configuration, and seeds are
+fixed. `make all CONFIG=configs/bgl_cpu.yaml`, with the server from that file running, reproduces the
+run; `make smoke` checks the pipeline in about a minute. The trained LogBERT
+checkpoint, the induced rules (and all candidates), the per-template decisions, all prompts and the LLM
+response cache are committed under `results/`. With the cache, Approach B replays without a model
+(`results/README.md`).
 
 ## References
 
