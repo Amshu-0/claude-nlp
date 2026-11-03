@@ -13,7 +13,8 @@ OUT    ?= outputs/bgl
 CACHE  ?= outputs/llm_cache
 
 .PHONY: help install data data-2k preprocess logbert logbert-train logbert-eval \
-        rules rule-guided keyword compare analyze results restore figures demo test lint format smoke all
+        rules rule-guided keyword compare analyze results restore figures slides demo test lint format \
+        smoke all
 
 help:            ## List the available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -84,6 +85,9 @@ restore:         ## Copy the committed results/ back into $(OUT), e.g. to run th
 
 figures:         ## Draw the guide's figures from a run into docs/figures/ (needs the docs extra)
 	$(PY) scripts/make_figures.py --config $(CONFIG)
+
+slides:          ## Rebuild docs/slides/presentation.pptx and its speaker notes (needs Node.js)
+	cd docs/slides && npm install --no-audit --no-fund && node render_diagrams.js && node build_deck.js
 
 demo:            ## Launch the Gradio demo
 	$(PY) app/demo.py --config $(CONFIG)

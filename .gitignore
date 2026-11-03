@@ -41,3 +41,6 @@ outputs/
 
 # Secrets for LLM providers
 .env
+
+# Node packages for building the slide deck (docs/slides/)
+node_modules/
