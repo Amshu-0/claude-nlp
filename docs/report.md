@@ -2,10 +2,9 @@
 
 **Technical report (draft)** · CSCI 390 Natural Language Processing and Applications · Dr. Qi Li
 
-> **Status of this draft.** Sections 1-3 describe the pipeline as implemented in this repository.
-> Values marked **TBD** come from the full-BGL run (`notebooks/colab_full_run.ipynb` or `make all`):
-> copy them from `outputs/bgl/results/comparison.md`, `outputs/bgl/analysis/analysis.md`,
-> `data/processed/bgl/stats.json` and `outputs/bgl/rules/rules.md`.
+> **Status of this draft.** Approach A results come from the full-BGL run on a 4-core CPU
+> (`configs/bgl_cpu.yaml`). Approach B is running; its rows are marked **TBD** until then, to be
+> copied from `results/comparison.md` and `results/analysis/analysis.md`.
 
 ## 1. Problem formulation
 
@@ -112,6 +111,13 @@ and the hypersphere loss (`nn.MSELoss`, added as `loss + 0.1 * hyper_loss`). The
 | Training budget | batch 32, up to 200 epochs, early-stopping patience 10 (`BGL/logbert.py`) | batch 64, up to 50 epochs, patience 5 | compute: the full run trains on a CPU |
 | Hypersphere centre | mean over the train and validation loaders each epoch (`bert_pytorch/train_log.py`) | mean over (a sample of) training sequences each epoch | keeps the validation period untouched |
 
+**The reported run.** We trained on 4 CPU cores with `configs/bgl_cpu.yaml`, which keeps the
+architecture above. The 35,035 normal training chunks contain only 12,394 distinct sequences, so the
+run de-duplicated them: 11,615 training and 820 dev sequences, a vocabulary of 172 keys and 1,670,320
+parameters. The centre was estimated from 4,000 sequences and training ran at most 6 epochs. It took
+60 minutes, and the dev loss fell from 1.59 to 1.02 (epoch 5, kept). A GPU run with
+`configs/bgl.yaml` (up to 50 epochs, no de-duplication) may score differently.
+
 **Extension (full-coverage masking).** LogBERT masks a random 50% of the keys once, so a single
 anomalous message is inspected with probability of only about 0.5. Our `full_coverage` mode splits the
 positions into ⌈1/mask ratio⌉ disjoint groups and masks each in turn, so every key is checked exactly
@@ -164,34 +170,45 @@ wall-clock time to score the test windows. For Approach B it is the summed laten
 test templates, using the original latency for cached answers. `scripts/compare.py` recomputes all
 metrics from the saved predictions and refuses methods that did not score exactly the shared windows.
 
-**Main results (test period, window level).**
+**Main results (test period, window level).** The test set has 5,742 windows, of which 495 (8.6%) are
+anomalous. Inference times were measured on 4 CPU cores.
 
 | Method | Precision | Recall | F1 | FP | Msg-level F1 | Inference time |
 |---|---:|---:|---:|---:|---:|---:|
-| A: LogBERT (g = TBD, r = TBD) | TBD | TBD | TBD | TBD | - | TBD |
-| A+: LogBERT, full-coverage masking | TBD | TBD | TBD | TBD | - | TBD |
+| A: LogBERT (g = 12, r = 3) | 0.174 | 0.921 | 0.293 | 2,159 | - | 78 s |
+| A+: LogBERT, full-coverage masking (g = 8, r = 8) | 0.184 | 0.897 | 0.305 | 1,975 | - | 156 s |
 | B1: LLM zero-shot | TBD | TBD | TBD | TBD | TBD | TBD |
 | B2: LLM few-shot | TBD | TBD | TBD | TBD | TBD | TBD |
 | B3: LLM rule-based | TBD | TBD | TBD | TBD | TBD | TBD |
 | B4: Keyword rules (no LLM) | TBD | TBD | TBD | TBD | TBD | TBD |
-| Template-level oracle (upper bound for B) | TBD | TBD | TBD | TBD | TBD | - |
+| Template-level oracle (upper bound for B) | 1.000 | 0.992 | 0.996 | 0 | 0.999 | - |
 
-**Analysis** (`outputs/bgl/analysis/analysis.md`). Points to discuss once the numbers are in:
+**Analysis** (`results/analysis/analysis.md`).
 
-- **Template purity.** **TBD** of **TBD** test templates are mixed; they hold **TBD**% of the test alerts.
-  The oracle row shows how much any template-level method loses by ignoring parameter values.
-- **What the rules add.** Compare B3 with B4. If they are close, the rules, not the LLM, do the work. If
-  B3 is clearly better, the LLM generalises the rules to templates no keyword matches.
-- **What each approach misses** (per-category recall, missed alert templates). LogBERT should struggle
-  with alerts whose templates also occur in normal windows. The LLM should struggle with alerts whose
-  text sounds harmless (e.g. `generating core.<*>`).
-- **Agreement.** Anomalous windows caught only by A, only by B, by both or by neither. These indicate
-  whether the approaches are complementary.
-- **Sensitivity.** F1 over the (g, r) grid on validation
-  (`outputs/bgl/logbert/logbert_tuning_grid.csv`): how fragile LogBERT's operating point is.
-- **Cost.** LogBERT's inference cost grows with the number of windows (one forward pass per chunk). The
-  LLM's cost grows with the number of *unique templates*, not messages. That keeps it affordable on BGL,
-  but every new template after deployment needs another LLM call. Use the measured times in the table.
+- **LogBERT's false positives come from the drift.** 99.8% of its 2,159 false-positive windows contain
+  a template never seen in training. It flags only 0.3% of normal test windows without such a template,
+  but 57.7% of those with one. Recall stays high: it misses 39 of the 495 anomalous windows.
+- **Tuning on test would hide part of this.** Choosing g and r on the test windows, as the reference code
+  does, raises test F1 from 0.293 to 0.475 (g = 6, r = 20, precision 0.337). That setting sits at the
+  edge of our grid, so the inflated figure is a lower bound. The validation-tuned number is the honest one.
+- **The operating point is fragile.** On validation, only 16 of 231 (g, r) settings come within 0.02 of
+  the best F1 (0.599); at r = 3, F1 ranges from 0.261 to 0.599 across g. Validation also under-represents
+  the drift: 9.6% of its normal windows contain an unseen template, against 71.1% in test.
+- **Full coverage helps a little.** Checking every key raises precision from 0.174 to 0.184 (F1 0.293 →
+  0.305) at twice the inference time. Both variants catch the same 442 anomalous windows and share
+  1,925 false positives.
+- **What LogBERT misses.** Window recall is 0.95 to 0.99 for the large alert categories (`APPSEV`,
+  `KERNRTSP`, `KERNMC`, `MASABNORM`), but 0.39 for `KERNSOCK` (`<*> <*> <*> socket closed`, 14 missed
+  windows) and 0.14 for `LINKIAP` (`MidplaneSwitchController::receiveTrain() iap failed …`).
+- **Template purity barely limits Approach B.** Only 3 of 472 test templates are mixed, holding 258
+  messages and 31 of the 28,915 test alerts, so a template-level oracle reaches F1 0.996.
+- **What the rules add** (TBD). Compare B3 with B4: if they are close, the rules, not the LLM, do the
+  work; if B3 is clearly better, the LLM generalises the rules to templates no keyword matches.
+- **Agreement between the approaches** (TBD). Which anomalous windows only A, only B, both or neither
+  catch, to tell whether the approaches are complementary.
+- **Cost.** LogBERT scores the 5,742 test windows in 78 s (156 s with full coverage). The LLM's cost grows
+  with the number of unique templates (472 in the test period), not messages, but every template that
+  appears after deployment needs another LLM call.
 
 ## 5. Reflection: errors and difficulties
 
