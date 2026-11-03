@@ -19,9 +19,10 @@ anomalous system events?
 Both approaches are evaluated on **the same 5-minute test windows** of BGL, after a **chronological
 60/20/20 split**, by **the same evaluation code**.
 
+- **The project explained from scratch, with diagrams: [`docs/guide.md`](docs/guide.md)**
 - Technical report: [`docs/report.md`](docs/report.md)
+- Slides with speaker notes for the 30-minute talk: [`docs/slides/`](docs/slides/README.md)
 - Results, trained model, rules and LLM answers: [`results/`](results/README.md)
-- Presentation plan and demo script: [`docs/presentation.md`](docs/presentation.md)
 - Full GPU run on Colab: [`notebooks/colab_full_run.ipynb`](notebooks/colab_full_run.ipynb)
 
 ## Results
@@ -67,7 +68,7 @@ scripts/            one command-line entry point per pipeline stage
 app/demo.py         Gradio demo
 notebooks/          Colab notebook for the full GPU run
 tests/              148 unit and integration tests (offline; stub LLMs only)
-docs/               report and presentation plan
+docs/               guide, report, slides (with speaker notes) and figures
 results/            the reported run: metrics, LogBERT checkpoint, rules, decisions, analysis, LLM cache
 ```
 
@@ -245,7 +246,8 @@ GitHub Actions runs lint and tests on Python 3.10 and 3.12 for every push.
 | Run instructions | this README, `results/README.md`, `notebooks/colab_full_run.ipynb` |
 | Technical report (2-4 pages) | `docs/report.md` |
 | Interactive demo | `app/demo.py` |
-| Presentation plan | `docs/presentation.md` |
+| Guide to the whole project | `docs/guide.md` |
+| Presentation slides with speaker notes | `docs/slides/presentation.pptx` (PDF and `speaker_notes.md` beside it) |
 
 ## References
 

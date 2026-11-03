@@ -1,5 +1,8 @@
 # Presentation plan (30 minutes)
 
+> The finished deck is [`slides/presentation.pptx`](slides/README.md), with speaker notes on every
+> slide. This file is the original outline it was built from.
+
 Follows the course format: introduction (5 min), implementation (5), errors and lessons (5), live demo
 (10), Q&A (5). If you present as a team, give each member one block of about 10 minutes. All figures
 come from the full-BGL CPU run (`docs/report.md`, `results/`).

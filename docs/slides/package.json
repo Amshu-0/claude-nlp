@@ -1,0 +1,14 @@
+{
+  "name": "logad-slides",
+  "private": true,
+  "description": "Builds the presentation deck (presentation.pptx) and its diagrams from source.",
+  "scripts": {
+    "diagrams": "node render_diagrams.js",
+    "deck": "node build_deck.js",
+    "build": "node render_diagrams.js && node build_deck.js"
+  },
+  "dependencies": {
+    "mermaid": "11.4.1",
+    "pptxgenjs": "3.12.0"
+  }
+}
