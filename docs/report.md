@@ -29,6 +29,11 @@ BlueGene/L supercomputer at Lawrence Livermore National Laboratory, of which 348
 alert tag. Each line has ten fields; the first is the **alert tag** (`-` for normal messages, otherwise
 a category such as `KERNDTLB` or `APPREAD`).
 
+**Data source.** Zenodo, Loghub's official host, was unreachable from our development environment.
+We therefore used a Git LFS copy of `BGL.log` from a public GitHub repository and verified that it is
+Loghub's file. Its SHA-256 (`666130b1…a5d2`) matches the copy's LFS record. It has exactly 4,747,963
+lines and 348,460 alert lines, and it contains all 2,000 lines of Loghub's official `BGL_2k` sample.
+
 **Preventing label leakage.** The alert tag is the ground truth. `logad/data/bgl.py` splits it off
 into a label column while reading the file. Every model reads only the message *content* (or Drain
 templates built from it), so no method can see the label. A test checks that tags never appear in the
@@ -39,9 +44,11 @@ replaces variable parts with `<*>` (e.g. `generating core.2275` becomes `generat
 `drain3` implementation with the LogBERT repository's BGL settings: depth 3, similarity threshold 0.3,
 and masking of hexadecimal numbers, IPv4 addresses and integers. drain3's depth semantics match
 logparser's Drain, which LogBERT uses: depth 3 groups messages by length only. Clusters whose final
-template text is identical share one ID, as in logparser. Full BGL yields **TBD** templates. On
-Loghub's 2,000-line sample we obtain 100 templates against 120 in Loghub's hand-labelled ground truth;
-some over-merging is visible (e.g. `data <*> <*>` mixes storage-interrupt alerts with normal messages).
+template text is identical share one ID, as in logparser. On full BGL, Drain forms 2,028 clusters
+that end with 923 distinct templates; preprocessing takes 199 s on 4 CPU cores. On Loghub's
+2,000-line sample we obtain 100 templates against 120 in Loghub's hand-labelled ground truth. Some
+over-merging is visible (e.g. `data <*> <*>` mixes storage-interrupt alerts with normal messages).
+Ten templates are mixed in this way, covering 2.74% of all messages.
 
 **Chronological split.** The timeline is cut into the first 60% (training), the next 20% (validation)
 and the last 20% (test). We never shuffle: Le & Zhang (2022) showed that random splits inflate
@@ -53,11 +60,19 @@ contains at least one alert. This is LogBERT's convention (`max(label_data[start
 `sliding_window`), and our vectorised implementation is tested against a line-by-line port of that
 function.
 
-| Split | Period | Messages | Alerts | Windows | Anomalous windows | Templates unseen in training |
+| Split | Period (UTC) | Messages | Alerts | Windows | Anomalous windows | Templates (unseen in training) |
 |---|---|---:|---:|---:|---:|---:|
-| Train | TBD | TBD | TBD | TBD | TBD | 0 |
-| Validation | TBD | TBD | TBD | TBD | TBD | TBD |
-| Test | TBD | TBD | TBD | TBD | TBD | TBD |
+| Train | 2005-06-03 to 2005-10-10 | 3,569,472 | 296,569 | 21,112 | 2,083 | 442 (0) |
+| Validation | 2005-10-10 to 2005-11-22 | 696,160 | 22,976 | 10,478 | 446 | 375 (167) |
+| Test | 2005-11-22 to 2006-01-04 | 482,331 | 28,915 | 5,742 | 495 | 472 (361) |
+
+**The log changes over time.** 79.6% of test messages use a template never seen in training. The two
+largest are periodic diagnostics, `<*> total interrupts. …` and `<*> microseconds spent in the rbs
+signal handler …`, with 135,092 test messages each and none before October 2005. As a result, 71.1% of
+*normal* test windows contain at least one unseen template, against 9.6% of normal validation windows.
+This is the "new log events" problem Le & Zhang (2022) describe for chronological splits. It hits
+LogBERT hardest, because an unseen key is always a miss, while an LLM can read that such a message is
+benign. Only 172 distinct keys occur in normal training windows, which bounds LogBERT's vocabulary.
 
 ## 3. Methods
 
