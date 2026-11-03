@@ -1,8 +1,8 @@
 # Presentation plan (30 minutes)
 
 Follows the course format: introduction (5 min), implementation (5), errors and lessons (5), live demo
-(10), Q&A (5). If you present as a team, give each member one block of about 10 minutes. Figures marked
-TBD come from the full run (see `docs/report.md`).
+(10), Q&A (5). If you present as a team, give each member one block of about 10 minutes. All figures
+come from the full-BGL CPU run (`docs/report.md`, `results/`).
 
 ## 1. Task and methods - 5 min
 
@@ -41,36 +41,62 @@ conditions: zero-shot, few-shot, rule-based, and keyword-only (no LLM).
 - `logad/logbert/detector.py`: storing ranks so the whole (g, r) grid costs one forward pass
 - `logad/rules/induction.py`: `verify_rules`, which turns LLM suggestions into trusted rules
 
-**Slide 9 - Results table** (from `outputs/bgl/results/comparison.md`): precision, recall, F1, false
-positives and inference time for A, A+ and B1-B4, plus the template-level oracle. TBD.
+**Slide 9 - Results table** (from `results/comparison.md`, test windows, 495 of 5,742 anomalous):
+
+| Method | P | R | F1 | FP | Time |
+|---|---:|---:|---:|---:|---:|
+| A LogBERT / A+ full coverage | 0.174 / 0.184 | 0.921 / 0.897 | 0.293 / 0.305 | 2,159 / 1,975 | 78 / 156 s |
+| B1 LLM zero-shot | 0.108 | 1.000 | 0.194 | 4,103 | 47 min |
+| B2 LLM few-shot | 0.323 | 0.941 | 0.481 | 976 | 53 min |
+| B3 LLM rule-based | 0.489 | 0.943 | 0.644 | 488 | 57 min |
+| B4 keyword rules, no LLM | 1.000 | 0.915 | 0.956 | 0 | 8 ms |
+
+Say it in one line: the rules win, and they win without the LLM.
+
+**Slide 10 - Why.** Three findings, one picture each:
+- *Drift hurts LogBERT:* 361 of 472 test templates are new; 99.8% of its false-positive windows
+  contain one.
+- *The LLM reads the rules' sentences, not their keywords:* in only 20 of 420 citations does the cited
+  rule's keyword occur in the template. Example: rule 4 ("Messages mentioning 'FAILED' …", keywords
+  `lustre mount failed`, …) applied to `ciod: Error loading … Permission denied`.
+- *Ranking keeps near-duplicates:* 12 of the top 30 rules are about "terminated"; `socket closed` sits at
+  rank 32, just outside, and is the keyword rules' biggest miss.
 
 ## 3. Errors, debugging and lessons - 5 min
 
-**Slide 10 - Reading the reference code critically.** The LogBERT repository tunes its threshold on the
-test set and silently skips short test sequences. Show what our numbers would look like with the same
-shortcuts if you have time to run it (TBD), or simply state the risk.
+**Slide 11 - Reading the reference code critically.** The LogBERT repository tunes its threshold on the
+test set and silently skips short test sequences. Choosing g and r on the test windows, as it does,
+would raise our LogBERT F1 from 0.293 to 0.475; tuning on validation keeps the honest number.
 
-**Slide 11 - Random masking misses things.** In the demo an inserted alert was sometimes never masked,
-so LogBERT never looked at it. This led to the full-coverage extension (show A vs. A+).
+**Slide 12 - Random masking misses things.** In the demo an inserted alert was sometimes never masked,
+so LogBERT never looked at it. This led to the full-coverage extension (A vs. A+: F1 0.293 → 0.305).
 
-**Slide 12 - Template purity.** Drain merges some alert and normal messages (`data <*> <*>`), so no
-template-level method can exceed the oracle bound. Show the share of alerts in mixed templates (TBD).
+**Slide 13 - Template purity and label drift.** Within the test period only 31 of 28,915 alerts sit in
+mixed templates (oracle F1 0.996). Across periods it is worse: `ciod: LOGIN <*> failed: <*> <*>` is
+`Permission denied` (normal) in training but `Input/output error` (816 alerts) in test. Drain masked
+exactly the words that carry the label.
 
-**Slide 13 - Lessons.** Small samples mislead: on the 2k sample LogBERT flags almost everything. Write
-tests against the original code. Cache every LLM call. Report the time spent, not just F1.
+**Slide 14 - Lessons.** Small samples mislead: on the 2k sample LogBERT flags almost everything. Write
+tests against the original code. Cache every LLM call (it saved the run when the machine restarted).
+Check that an LLM applies the rules it cites. Report the time spent, not just F1.
 
 ## 4. Live demo - 10 min
 
-Start before the talk: `python app/demo.py --share` (or the last cell of the Colab notebook), and keep
-the link on a slide so classmates can try it on their phones.
+Start before the talk with the reported run's model and decisions (after `make data preprocess` and
+`make restore OUT=outputs/bgl_cpu`, see the README): `python app/demo.py --config configs/bgl_cpu.yaml
+--share`. Keep the link on a slide so classmates can try it on their phones.
+
+Each line is inserted into the same normal test window, which already contains messages the
+rule-based LLM flags falsely. Its window verdict therefore reads "anomalous" before you add anything,
+so read the "Your line: …" part of each verdict.
 
 | Step | Input | What to point out |
 |---|---|---|
-| 1 | Paste the full line `KERNDTLB 1118536327 2005.06.11 R30-M0-N9-C:J16-U01 2005-06-11-17.32.07.581048 R30-M0-N9-C:J16-U01 RAS KERNEL FATAL data TLB error interrupt` | The alert tag is removed before analysis (label leakage). Both approaches flag it. Show the rule that fired and LogBERT's rank for the line. |
-| 2 | `instruction cache parity error corrected` | Contains "error" but is **normal**. Did the keyword rules learn not to use "error" alone? (Verification rejects rules that are wrong on training data.) |
-| 3 | `ciod: LOGIN chdir(/p/gb1/stella/RAPTOR/2183) failed: Input/output error` vs. `ciod: LOGIN /p/gb1/x failed: No such file or directory` | Nearly identical text, different labels (alert vs. normal). A hard case for keywords. Does the LLM separate them? |
+| 1 | Paste the full line `KERNDTLB 1118536327 2005.06.11 R30-M0-N9-C:J16-U01 2005-06-11-17.32.07.581048 R30-M0-N9-C:J16-U01 RAS KERNEL FATAL data TLB error interrupt` | The alert tag is removed before analysis (label leakage). The keyword rules flag it (rule 24). LogBERT never saw this key in a normal window (`<unk>`, rank 176), so it counts as a miss, but one miss does not flag the window (it needs more than r = 8). |
+| 2 | `instruction cache parity error corrected` | Contains "error" but is **normal**. The keyword rules leave it alone (verification rejects rules that are wrong on training data); the zero-shot LLM called it abnormal in our run (33,547 false-alarm messages). |
+| 3 | `ciod: LOGIN chdir(/p/gb1/stella/RAPTOR/2183) failed: Input/output error` vs. `ciod: LOGIN /p/gb1/x failed: No such file or directory` | Nearly identical text, different labels (alert vs. normal). Drain maps the alert to `ciod: LOGIN <*> failed: <*> <*>`, so the model never sees "Input/output error". In our run the few-shot and rule-based LLM got both lines backwards. |
 | 4 | Tab 2: pick a normal window, insert `rts panic! - stopping execution` at different positions | LogBERT's verdict changes with context; compare the "Without your line" count. |
-| 5 | Ask the audience for a made-up line, e.g. `fan module 3 failed on node card R12-M0` | An unseen template: LogBERT sees `<unk>` (always a miss), while the LLM reasons about the text. |
+| 5 | Ask the audience for a made-up line, e.g. `fan module 3 failed on node card R12-M0` | An unseen template: LogBERT sees `<unk>` (always a miss), while the LLM reasons about the text (live, so the model server must be running; otherwise only the keyword rules judge it). |
 
 Fallback if the network fails: run `python app/demo.py --no-live-llm` locally. Saved LLM decisions
 still cover every template from the experiment.
@@ -86,6 +112,12 @@ still cover every template from the experiment.
   oracle row quantifies what is lost.
 - **Did you reproduce LogRules fully?** No. Its CPO alignment stage (fine-tuning the 8B model) is out of
   scope; we reproduce induction and deduction.
-- **How sensitive is LogBERT to g and r?** Show the validation F1 grid (`logbert_tuning_grid.csv`).
-- **Could the two approaches be combined?** Check the agreement table: if they catch different alerts,
-  a union or vote may help (future work).
+- **How sensitive is LogBERT to g and r?** Very: only 16 of 231 (g, r) settings come within 0.02 of the
+  best validation F1 (`results/logbert/logbert_tuning_grid.csv`).
+- **Is k = 30 rules cherry-picked?** It is LogRules' value, fixed in the proposal. On validation k = 45
+  is best, and it would have given test F1 0.980 (`results/analysis/keyword_rule_sensitivity.csv`).
+- **Why is the LLM worse than its own rules?** It follows the rules' sentences, which are broader than
+  the verified keywords, so it fires on templates no keyword matches: 5 real alerts, but 23 false alarms.
+- **Could the two approaches be combined?** They do miss different windows (18 only LogBERT, 15 only the
+  keyword rules), but "either" keeps LogBERT's 2,159 false positives (F1 0.301) and "both" scores 0.939,
+  below the rules alone. Only the rule-based LLM gains from requiring LogBERT to agree (0.644 → 0.776).
