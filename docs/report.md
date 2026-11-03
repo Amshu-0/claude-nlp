@@ -1,0 +1,208 @@
+# Comparing BERT-Based and Rule-Guided Language Models for System Log Anomaly Detection
+
+**Technical report (draft)** · CSCI 390 Natural Language Processing and Applications · Dr. Qi Li
+
+> **Status of this draft.** Sections 1-3 describe the pipeline as implemented in this repository.
+> Values marked **TBD** come from the full-BGL run (`notebooks/colab_full_run.ipynb` or `make all`):
+> copy them from `outputs/bgl/results/comparison.md`, `outputs/bgl/analysis/analysis.md`,
+> `data/processed/bgl/stats.json` and `outputs/bgl/rules/rules.md`.
+
+## 1. Problem formulation
+
+Large computer systems write millions of log messages; most record routine events, a few signal
+failures. We study **window-level log anomaly detection**: given all messages a system printed in a
+5-minute window, decide whether the window contains at least one alert. Anomalous is the positive class.
+
+**Research question.** How does a BERT-style model that learns patterns in *sequences of log-template
+IDs* (LogBERT; Guo et al., 2021) compare with a *rule-guided large language model that reads the log
+text itself* (inspired by LogRules; Huang et al., 2025) in identifying anomalous system events?
+
+The two papers cannot be compared through their published numbers: they use different evaluation units
+and data samples (DeepLog, for example, reaches 86.12 F1 on BGL in the LogBERT paper but 16.8 F1 in the
+LogRules paper). We therefore re-run both approaches **under one shared setup**: the same dataset, the
+same chronological split and the same test windows, scored by the same code.
+
+## 2. Dataset and preprocessing
+
+**BGL** (Oliner & Stearley, 2007), from Loghub (Zhu et al., 2023): 4,747,963 messages from the
+BlueGene/L supercomputer at Lawrence Livermore National Laboratory, of which 348,460 (7.3%) carry an
+alert tag. Each line has ten fields; the first is the **alert tag** (`-` for normal messages, otherwise
+a category such as `KERNDTLB` or `APPREAD`).
+
+**Preventing label leakage.** The alert tag is the ground truth. `logad/data/bgl.py` splits it off
+into a label column while reading the file. Every model reads only the message *content* (or Drain
+templates built from it), so no method can see the label. A test checks that tags never appear in the
+model-visible text.
+
+**Template extraction.** Drain (He et al., 2017) groups messages printed by the same statement and
+replaces variable parts with `<*>` (e.g. `generating core.2275` becomes `generating core.<*>`). We use the
+`drain3` implementation with the LogBERT repository's BGL settings: depth 3, similarity threshold 0.3,
+and masking of hexadecimal numbers, IPv4 addresses and integers. drain3's depth semantics match
+logparser's Drain, which LogBERT uses: depth 3 groups messages by length only. Clusters whose final
+template text is identical share one ID, as in logparser. Full BGL yields **TBD** templates. On
+Loghub's 2,000-line sample we obtain 100 templates against 120 in Loghub's hand-labelled ground truth;
+some over-merging is visible (e.g. `data <*> <*>` mixes storage-interrupt alerts with normal messages).
+
+**Chronological split.** The timeline is cut into the first 60% (training), the next 20% (validation)
+and the last 20% (test). We never shuffle: Le & Zhang (2022) showed that random splits inflate
+semi-supervised detectors such as LogBERT. Both approaches share this split.
+
+**Shared evaluation unit.** As in LogBERT, messages are grouped into **5-minute windows that slide by
+1 minute**, built separately inside each split so no window mixes periods. A window is anomalous if it
+contains at least one alert. This is LogBERT's convention (`max(label_data[start:end])` in its
+`sliding_window`), and our vectorised implementation is tested against a line-by-line port of that
+function.
+
+| Split | Period | Messages | Alerts | Windows | Anomalous windows | Templates unseen in training |
+|---|---|---:|---:|---:|---:|---:|
+| Train | TBD | TBD | TBD | TBD | TBD | 0 |
+| Validation | TBD | TBD | TBD | TBD | TBD | TBD |
+| Test | TBD | TBD | TBD | TBD | TBD | TBD |
+
+## 3. Methods
+
+### 3.1 Approach A: LogBERT (reproduction)
+
+LogBERT is not a pretrained language model. It is a small Transformer encoder trained from scratch on
+sequences of log keys (template IDs) from **normal training windows only**.
+
+| Component | Setting |
+|---|---|
+| Input | `[<dist>, k1, ..., kn]`; windows longer than 511 keys are split into chunks |
+| Encoder | 2 pre-norm Transformer layers, hidden size 256, 4 heads, GELU feed-forward of size 1024, dropout 0.1, sinusoidal positions |
+| Vocabulary | keys seen in normal training windows; unseen keys become `<unk>` |
+| Objective | MLKP: cross-entropy on masked keys (50% masked; 80/10/10 replacement) **+ 0.1 × VHM**: MSE between each `<dist>` vector and the hypersphere centre, re-estimated every epoch |
+| Optimisation | AdamW, learning rate 1e-3 with 500 warm-up steps, batch 64, gradient clipping 1.0, early stopping (patience 5) on a held-out tail of 10% of normal training windows |
+| Detection | mask keys and rank the true key among the model's predictions; a chunk is anomalous if **more than r** masked keys fall outside the **top-g**; a window is anomalous if any chunk is |
+| Tuning | g ∈ {1, ..., 20} and r ∈ {0, ..., 20} chosen by F1 on the **validation** windows |
+
+Because only the rank of each true key is stored, the whole (g, r) grid is evaluated from a single
+forward pass. Unseen (`<unk>`) keys can never be predicted and therefore always count as misses.
+
+**Where this reproduction deliberately differs from the reference code.** These are our reading of
+the LogBERT repository (`HelenGuohx/logbert`); please re-check the file references before submitting.
+
+| Aspect | LogBERT repository | This project | Why |
+|---|---|---|---|
+| Train/test selection | normal sessions shuffled before splitting (`BGL/data_process.py`) | chronological 60/20/20 | Le & Zhang (2022); deployment realism |
+| Threshold selection | best threshold searched on the **test** results (`predict_log.py`) | g and r tuned on validation, applied once to test | avoids test-set tuning |
+| Short test windows | sequences shorter than `min_len` are skipped at test time (`dataset/sample.py`) | every window is evaluated | both approaches must score the same windows |
+| Long windows | truncated to `seq_len` | split into chunks | messages after position 512 would otherwise go unchecked |
+| Decision rule | undetected keys > ratio × masked keys | undetected keys > r (paper's formulation) | follows the paper and the proposal |
+
+**Extension (full-coverage masking).** LogBERT masks a random 50% of the keys once, so a single
+anomalous message is inspected with probability of only about 0.5. Our `full_coverage` mode splits the
+positions into ⌈1/mask ratio⌉ disjoint groups and masks each in turn, so every key is checked exactly
+once, at twice the inference cost. It is reported as a separate method, `logbert_full`.
+
+### 3.2 Approach B: Rule-guided LLM (partial adaptation of LogRules)
+
+LogRules works in three stages: induction, alignment and deduction. We implement **induction** and
+**deduction** and leave out the CPO alignment (fine-tuning) stage.
+
+**Induction.** The training pool contains every template seen in the training period, labeled by the
+majority label of its training messages. The generator LLM (**TBD:** GPT-4o-mini, or
+Qwen2.5-7B-Instruct if no API key was available) sees batches of 20 labeled templates, balanced between
+normal and abnormal, over 3 shuffled rounds. For each batch it proposes up to 8 rules as JSON: a
+sentence, keyword phrases copied from the logs, and a label (`prompts/rule_induction.txt`). Duplicate
+proposals are merged.
+
+**Verification and ranking.** Every candidate rule is applied to the *whole* training pool by keyword
+matching. A rule is kept only if it is never wrong on the templates it matches (precision 1.0) and
+matches at least one. Kept rules are ranked by usage: the training templates (then messages) they
+cover correctly. The top 30 are used (`outputs/bgl/rules/rules.md`): **TBD** candidates gave **TBD**
+kept rules.
+
+**Deduction: four conditions.** The classifier is **Qwen2.5-7B-Instruct** (greedy decoding). Each
+*unique template* in the validation and test periods is classified once, and its label is copied to
+every message with that template. A window is flagged if any of its messages is.
+
+1. **Zero-shot:** the template alone (`prompts/zero_shot.txt`).
+2. **Few-shot (case-based):** plus 8 fixed, label-balanced training templates (`prompts/few_shot.txt`).
+3. **Rule-based:** plus the 30 ranked rules; the model must apply the first matching rule and cite
+   its number (`prompts/rule_based.txt`).
+4. **Keyword baseline (no LLM):** the same 30 rules as a decision list of plain string matches. The
+   first rule that fires decides; otherwise the template is normal. This tests whether the LLM adds
+   anything beyond the rules.
+
+Answers are parsed as JSON, with a word-level fallback. Unusable answers default to *normal* and are
+counted (**TBD** per condition). Every prompt and raw answer is stored in a JSONL cache
+(`outputs/llm_cache/`), which makes reruns free and the experiment auditable.
+
+## 4. Evaluation
+
+**Metrics.** Precision, recall, F1 and false positives on the shared test windows; message-level F1 as
+a secondary result for Approach B (the LogRules setting); and inference time. For LogBERT this is the
+wall-clock time to score the test windows. For Approach B it is the summed latency of classifying the
+test templates, using the original latency for cached answers. `scripts/compare.py` recomputes all
+metrics from the saved predictions and refuses methods that did not score exactly the shared windows.
+
+**Main results (test period, window level).**
+
+| Method | Precision | Recall | F1 | FP | Msg-level F1 | Inference time |
+|---|---:|---:|---:|---:|---:|---:|
+| A: LogBERT (g = TBD, r = TBD) | TBD | TBD | TBD | TBD | - | TBD |
+| A+: LogBERT, full-coverage masking | TBD | TBD | TBD | TBD | - | TBD |
+| B1: LLM zero-shot | TBD | TBD | TBD | TBD | TBD | TBD |
+| B2: LLM few-shot | TBD | TBD | TBD | TBD | TBD | TBD |
+| B3: LLM rule-based | TBD | TBD | TBD | TBD | TBD | TBD |
+| B4: Keyword rules (no LLM) | TBD | TBD | TBD | TBD | TBD | TBD |
+| Template-level oracle (upper bound for B) | TBD | TBD | TBD | TBD | TBD | - |
+
+**Analysis** (`outputs/bgl/analysis/analysis.md`). Points to discuss once the numbers are in:
+
+- **Template purity.** **TBD** of **TBD** test templates are mixed; they hold **TBD**% of the test alerts.
+  The oracle row shows how much any template-level method loses by ignoring parameter values.
+- **What the rules add.** Compare B3 with B4. If they are close, the rules, not the LLM, do the work. If
+  B3 is clearly better, the LLM generalises the rules to templates no keyword matches.
+- **What each approach misses** (per-category recall, missed alert templates). LogBERT should struggle
+  with alerts whose templates also occur in normal windows. The LLM should struggle with alerts whose
+  text sounds harmless (e.g. `generating core.<*>`).
+- **Agreement.** Anomalous windows caught only by A, only by B, by both or by neither. These indicate
+  whether the approaches are complementary.
+- **Sensitivity.** F1 over the (g, r) grid on validation
+  (`outputs/bgl/logbert/logbert_tuning_grid.csv`): how fragile LogBERT's operating point is.
+- **Cost.** LogBERT's inference cost grows with the number of windows (one forward pass per chunk). The
+  LLM's cost grows with the number of *unique templates*, not messages. That keeps it affordable on BGL,
+  but every new template after deployment needs another LLM call. Use the measured times in the table.
+
+## 5. Reflection: errors and difficulties
+
+- **Matching LogBERT's windowing exactly.** The original `sliding_window` loop has edge cases: it stops
+  after the first window that reaches the last message, and it drops empty and duplicate windows. We
+  replaced it with a binary-search version and wrote a test that compares both on random bursty
+  timelines.
+- **Reading the reference code critically.** Three choices in the LogBERT repository would have inflated
+  our numbers: tuning the threshold on test, dropping short test sequences, and shuffled
+  training/test selection. Documenting and changing them was a large part of the reproduction.
+- **Random masking leaves messages unchecked.** Inspecting single windows in the demo showed that an
+  inserted alert is often simply not masked, which motivated the full-coverage extension.
+- **Template granularity.** Drain with a 0.3 similarity threshold merges some alert and normal messages
+  into one template (`data <*> <*>` on the sample). This caps every template-level method, so we added
+  the purity analysis and the oracle bound.
+- **Engineering bugs caught by tests.** NumPy floats in the training history made checkpoints
+  unloadable with the safe `torch.load(weights_only=True)`. A categorical pandas column broke
+  `fillna(0)` under pandas 3. Integer table columns rejected string labels in the demo.
+- **Infrastructure.** The development environment could not reach Hugging Face, Zenodo or the OpenAI API.
+  We therefore designed for offline testing: stub LLMs in unit tests, the 2,000-line sample for smoke
+  runs, and a response cache so the expensive LLM steps run once on Colab.
+- **Small samples mislead.** On the 2,000-line sample, which is spread over seven months, most windows
+  hold one to three messages and LogBERT flags almost everything (test precision 0.13 at recall 1.0).
+  The sample is only a pipeline check, not evidence about either method.
+- **TBD:** difficulties from the full run (training time, LLM output format errors, rule quality, etc.).
+
+## 6. Reproducibility
+
+All settings live in `configs/bgl.yaml`; every run saves its resolved configuration, and seeds are fixed.
+`make all` (or the Colab notebook) reproduces every number above, and `make smoke` checks the pipeline in
+about a minute on a CPU. The trained LogBERT checkpoint, the induced rules, all prompts and the LLM
+response cache are kept with the results.
+
+## References
+
+- Guo, H., Yuan, S., & Wu, X. (2021). LogBERT: Log anomaly detection via BERT. arXiv:2103.04475.
+- He, P., Zhu, J., Zheng, Z., & Lyu, M. R. (2017). Drain: An online log parsing approach with fixed depth tree. ICWS 2017, 33-40.
+- Huang, X., Zhang, T., & Zhao, W. (2025). LogRules: Enhancing log analysis capability of large language models through rules. Findings of NAACL 2025, 452-470.
+- Le, V.-H., & Zhang, H. (2022). Log-based anomaly detection with deep learning: How far are we? ICSE 2022. arXiv:2202.04301.
+- Oliner, A., & Stearley, J. (2007). What supercomputers say: A study of five system logs. DSN 2007, 575-584.
+- Zhu, J., He, S., He, P., Liu, J., & Lyu, M. R. (2023). Loghub: A large collection of system log datasets for AI-driven log analytics. ISSRE 2023, 355-366.

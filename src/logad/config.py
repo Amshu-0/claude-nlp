@@ -43,6 +43,168 @@ class PathsConfig:
     output_dir: str = "outputs/bgl"
 
 
+# Drain log-parser settings (He et al., 2017). The defaults reproduce the
+# LogBERT repository's preprocessing of BGL.
+@dataclass
+class ParsingConfig:
+    # Depth of Drain's parse tree; 3 groups messages by token count only.
+    depth: int = 3
+    # Minimum fraction of matching tokens for a message to join a template.
+    similarity_threshold: float = 0.3
+    # Maximum number of children of an internal tree node.
+    max_children: int = 100
+    # Regexes replaced by <*> before parsing: hex numbers, IPv4 addresses,
+    # integers (same list as logad.data.drain.DEFAULT_MASKING).
+    masking: list[str] = field(
+        default_factory=lambda: [r"(0x)[0-9a-fA-F]+", r"\d+\.\d+\.\d+\.\d+", r"\d+"]
+    )
+
+
+# Chronological train / validation / test split (Le & Zhang, ICSE 2022).
+@dataclass
+class SplitConfig:
+    # "time" cuts the timeline into fractions; "messages" cuts the message count.
+    by: str = "time"
+    train: float = 0.6
+    val: float = 0.2
+    test: float = 0.2
+
+
+# Sliding windows: the shared evaluation unit of both approaches
+# (LogBERT's BGL setting: 5-minute windows moved forward by 1 minute).
+@dataclass
+class WindowConfig:
+    size_seconds: int = 300
+    step_seconds: int = 60
+
+
+# How LogBERT turns masked-key predictions into window labels, and the grid
+# searched on the validation period to pick the two detection settings.
+@dataclass
+class LogBERTDetectionConfig:
+    # Fraction of keys masked in each test sequence.
+    mask_ratio: float = 0.5
+    # Extension: mask every key exactly once (in ceil(1/mask_ratio) passes)
+    # instead of LogBERT's single random mask. Saved as method "logbert_full".
+    full_coverage: bool = False
+    # Candidate set sizes g: a key is "normal" if it is in the top-g predictions.
+    g_values: list[int] = field(default_factory=lambda: [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20])
+    # Anomalous-key counts r tried: 0, 1, ..., r_max. A sequence is anomalous
+    # if more than r of its masked keys fall outside the top-g candidates.
+    r_max: int = 20
+    # Batch size for scoring (no gradients, so it can be larger than training).
+    batch_size: int = 128
+    # Seed for choosing which keys to mask, so scores are reproducible.
+    seed: int = 1234
+
+
+# Approach A: LogBERT architecture, training and detection settings.
+@dataclass
+class LogBERTConfig:
+    # --- architecture (two-layer encoder as described in the LogBERT paper) ---
+    hidden: int = 256
+    layers: int = 2
+    heads: int = 4
+    ff_dim: int = 1024
+    dropout: float = 0.1
+    # Longest sequence incl. the <dist> token; longer windows are chunked.
+    max_len: int = 512
+    # --- training data ---
+    # Skip training windows with fewer keys than this (LogBERT's min_len).
+    min_len: int = 10
+    # Chronologically last fraction of normal training windows held out for
+    # early stopping (the labeled validation period is used for g / r only).
+    dev_fraction: float = 0.1
+    # Randomly subsample training sequences (e.g. for quick CPU runs); null = all.
+    max_train_sequences: int | None = None
+    # --- objective ---
+    # Fraction of keys masked for masked log-key prediction (MLKP).
+    mask_ratio: float = 0.5
+    # Weight alpha of the hypersphere (VHM) loss: loss = MLKP + alpha * VHM.
+    vhm_weight: float = 0.1
+    # Number of training sequences used to estimate the hypersphere centre.
+    center_samples: int = 20000
+    # --- optimisation ---
+    batch_size: int = 64
+    learning_rate: float = 1.0e-3
+    weight_decay: float = 0.0
+    warmup_steps: int = 500
+    grad_clip: float = 1.0
+    epochs: int = 50
+    # Stop after this many epochs without dev-loss improvement.
+    patience: int = 5
+    # "auto" picks CUDA, then Apple MPS, then CPU.
+    device: str = "auto"
+    detection: LogBERTDetectionConfig = field(default_factory=LogBERTDetectionConfig)
+
+
+# Connection settings for one LLM. Two are configured: the rule *generator*
+# (GPT-4o-mini in LogRules) and the *classifier* (Qwen2.5-7B-Instruct).
+@dataclass
+class LLMBackendConfig:
+    # "openai": the OpenAI API or any OpenAI-compatible server (Ollama, vLLM,
+    # LM Studio, ...); "transformers": a Hugging Face model loaded locally.
+    backend: str = "openai"
+    model: str = "gpt-4o-mini"
+    # Server URL for OpenAI-compatible backends, e.g. http://localhost:11434/v1
+    # for Ollama; null means the official OpenAI API.
+    base_url: str | None = None
+    # Environment variable that holds the API key (local servers need none).
+    api_key_env: str = "OPENAI_API_KEY"
+    # 0 = greedy decoding, so results are as reproducible as the backend allows.
+    temperature: float = 0.0
+    max_tokens: int = 512
+    timeout_seconds: float = 120.0
+    # Ask the server for JSON output (response_format=json_object) if supported.
+    json_mode: bool = False
+    # transformers backend only: load weights in 4 bit to fit a 16 GB GPU.
+    load_in_4bit: bool = False
+    seed: int = 0
+
+
+# Settings shared by everything that calls an LLM.
+@dataclass
+class LLMConfig:
+    # Every prompt and raw response is cached here (JSONL), which makes reruns
+    # free and keeps a complete, auditable record of all LLM calls.
+    cache_dir: str = "outputs/llm_cache"
+    generator: LLMBackendConfig = field(default_factory=LLMBackendConfig)
+    classifier: LLMBackendConfig = field(default_factory=LLMBackendConfig)
+
+
+# LogRules-style rule induction (Approach B).
+@dataclass
+class RulesConfig:
+    # Labeled training templates shown per induction prompt (half abnormal,
+    # half normal when possible).
+    batch_size: int = 20
+    # Passes over the training templates, each with a different shuffle.
+    rounds: int = 3
+    # Maximum number of rules the generator may propose per prompt.
+    max_rules_per_batch: int = 8
+    # Keep a rule only if it labels at least this share of the training
+    # templates it matches correctly (1.0 = never wrong on training data)...
+    min_precision: float = 1.0
+    # ...and matches at least this many training templates.
+    min_support: int = 1
+    # Number of top-ranked rules used by the rule-based prompt and the
+    # keyword baseline (both use the same rules, for a fair comparison).
+    top_k: int = 30
+
+
+# Approach B's deduction stage: which conditions to run and on which splits.
+@dataclass
+class DeductionConfig:
+    # Any of: zero_shot, few_shot, rule_based (LLM) and keyword (no LLM).
+    conditions: list[str] = field(
+        default_factory=lambda: ["zero_shot", "few_shot", "rule_based", "keyword"]
+    )
+    # Labeled training templates in the few-shot prompt (half abnormal).
+    few_shot_examples: int = 8
+    # Splits whose templates are classified; "test" is the reported result.
+    splits: list[str] = field(default_factory=lambda: ["val", "test"])
+
+
 # Root of the configuration tree: one instance describes one experiment.
 @dataclass
 class ExperimentConfig:
@@ -51,6 +213,13 @@ class ExperimentConfig:
     # Global random seed (Python, NumPy and PyTorch are all seeded from it).
     seed: int = 42
     paths: PathsConfig = field(default_factory=PathsConfig)
+    parsing: ParsingConfig = field(default_factory=ParsingConfig)
+    split: SplitConfig = field(default_factory=SplitConfig)
+    windows: WindowConfig = field(default_factory=WindowConfig)
+    logbert: LogBERTConfig = field(default_factory=LogBERTConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    rules: RulesConfig = field(default_factory=RulesConfig)
+    deduction: DeductionConfig = field(default_factory=DeductionConfig)
 
 
 # ---------------------------------------------------------------------------
